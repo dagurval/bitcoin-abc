@@ -85,6 +85,8 @@ static uint32_t GetNextEDAWorkRequired(const CBlockIndex *pindexPrev,
     return nPow.GetCompact();
 }
 
+static const int64_t NEW_DAA_ACTIVATION_TIME = 1510600000;
+
 uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
                              const CBlockHeader *pblock,
                              const Consensus::Params &params) {
@@ -96,6 +98,11 @@ uint32_t GetNextWorkRequired(const CBlockIndex *pindexPrev,
     // Special rule for regtest: we never retarget.
     if (params.fPowNoRetargeting) {
         return pindexPrev->nBits;
+    }
+
+    if (pindexPrev->GetMedianTimePast() >=
+        GetArg("-newaaactivationtime", NEW_DAA_ACTIVATION_TIME)) {
+        return GetNextCashWorkRequired(pindexPrev, pblock, params);
     }
 
     return GetNextEDAWorkRequired(pindexPrev, pblock, params);
