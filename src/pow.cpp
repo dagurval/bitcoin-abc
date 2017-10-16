@@ -9,6 +9,7 @@
 #include "chain.h"
 #include "primitives/block.h"
 #include "uint256.h"
+#include "util.h"
 
 #include <deque>
 
@@ -240,7 +241,7 @@ uint32_t GetNextCashWorkRequired(const CBlockIndex *pindexPrev,
     // Special difficulty rule for testnet:
     // If the new block's timestamp is more than 2* 10 minutes then allow
     // mining of a min-difficulty block.
-    if (params.fPowAllowMinDifficultyBlocks &&
+    if (false && params.fPowAllowMinDifficultyBlocks &&
         (pblock->GetBlockTime() >
          pindexPrev->GetBlockTime() + 2 * params.nPowTargetSpacing)) {
         return UintToArith256(params.powLimit).GetCompact();
