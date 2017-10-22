@@ -10,6 +10,8 @@
 #include "primitives/block.h"
 #include "uint256.h"
 
+#include <deque>
+
 /**
  * Compute the next required proof of work using the legacy Bitcoin difficulty
  * adjustement + Emergency Difficulty Adjustement (EDA).
@@ -148,4 +150,111 @@ bool CheckProofOfWork(uint256 hash, uint32_t nBits,
     }
 
     return true;
+}
+
+static std::deque<const CBlockIndex *>
+BlocksInRange(const CBlockIndex *pindexFirst, const CBlockIndex *pindexLast) {
+    std::deque<const CBlockIndex *> blocks;
+    for (const CBlockIndex *i = pindexLast; i != pindexFirst; i = i->pprev) {
+        blocks.push_front(i);
+    }
+    return blocks;
+}
+
+/**
+ * Compute the a target based on the work done between 2 blocks and the time
+ * required to produce that work.
+ */
+static arith_uint256 ComputeTarget(const CBlockIndex *pindexFirst,
+                                   const CBlockIndex *pindexLast) {
+    assert(pindexLast->nHeight > pindexFirst->nHeight);
+    std::deque<const CBlockIndex *> blocks =
+        BlocksInRange(pindexFirst, pindexLast);
+
+    // last_target = bits_to_target(states[last].bits)
+    arith_uint256 last_target;
+    last_target.SetCompact(pindexLast->nBits);
+
+    // timespan = 0
+    // prior_timestamp = states[first].timestamp
+    uint32_t timespan = 0;
+    uint32_t prior_timestamp = pindexFirst->nTime;
+
+    // for i in range(first + 1, last + 1):
+    for (auto i = begin(blocks); i != end(blocks); ++i) {
+        // target_i = bits_to_target(states[i].bits)
+        arith_uint256 target_i;
+        target_i.SetCompact((*i)->nBits);
+
+        // Prevent negative time_i values
+        //
+        // timestamp = max(states[i].timestamp, prior_timestamp)
+        // time_i = timestamp - prior_timestamp
+        // prior_timestamp = timestamp
+        uint32_t timestamp = std::max((*i)->nTime, prior_timestamp);
+        uint32_t time_i = timestamp - prior_timestamp;
+        prior_timestamp = timestamp;
+
+        // Difficulty weight
+        // adj_time_i = time_i * target_i // last_target # Difficulty weight
+        uint32_t adj_time_i = time_i * (target_i / last_target).GetLow64();
+
+        // Recency weight
+        // timespan += adj_time_i * i # Recency weight
+        timespan += adj_time_i * (std::distance(begin(blocks), i) + 1);
+    }
+
+    int block_count = blocks.size();
+    // Normalize recency weight
+    // timespan = timespan * 2 // (block_count + 1)
+    timespan = timespan * 2 / (block_count + 1);
+
+    // Standard retarget
+    // target = last_target * timespan # Standard retarget
+    // target //= 600 * block_count
+    arith_uint256 target = last_target * timespan;
+    target /= 600 * block_count;
+    return target;
+}
+
+/**
+ * Compute the next required proof of work using a weighted average of the
+ * estimated hashrate per block.
+ *
+ * Additionally, weight most recent blocks more heavily using an arithmetic
+ * sequence that drops to zero just before the earliest block in the window.
+ */
+uint32_t GetNextCashWorkRequired(const CBlockIndex *pindexPrev,
+                                 const CBlockHeader *pblock,
+                                 const Consensus::Params &params) {
+    // This cannot handle the genesis block and early blocks in general.
+    assert(pindexPrev);
+
+    // Special difficulty rule for testnet:
+    // If the new block's timestamp is more than 2* 10 minutes then allow
+    // mining of a min-difficulty block.
+    if (params.fPowAllowMinDifficultyBlocks &&
+        (pblock->GetBlockTime() >
+         pindexPrev->GetBlockTime() + 2 * params.nPowTargetSpacing)) {
+        return UintToArith256(params.powLimit).GetCompact();
+    }
+
+    // Compute the difficulty based on the full adjustment interval.
+    const uint32_t nHeight = pindexPrev->nHeight;
+    assert(nHeight >= params.DifficultyAdjustmentInterval());
+
+    // Find the last block before the difficulty interval.
+    uint32_t nHeightFirst = nHeight - 144;
+    const CBlockIndex *pindexFirst = pindexPrev->GetAncestor(nHeightFirst);
+    assert(pindexFirst);
+
+    // Compute the target based on time and work done during the interval.
+    const arith_uint256 nextTarget = ComputeTarget(pindexFirst, pindexPrev);
+
+    const arith_uint256 powLimit = UintToArith256(params.powLimit);
+    if (nextTarget > powLimit) {
+        return powLimit.GetCompact();
+    }
+
+    return nextTarget.GetCompact();
 }
